@@ -1,3 +1,11 @@
+"""Stage monthly NHSBSA prescribing archives and rebuild the Tableau CSV.
+
+Reuse local ZIPs and skip months with an existing staged Parquet. Download
+missing archives one at a time, retry interrupted transfers, and refresh
+rejected signed links once. Delete ZIPs downloaded by this run after their
+staged Parquet passes validation.
+"""
+
 import argparse
 import re
 import shutil
@@ -5,8 +13,10 @@ import subprocess
 import sys
 from datetime import date
 from html.parser import HTMLParser
+from http.client import IncompleteRead
 from pathlib import Path
-from urllib.error import HTTPError
+from time import sleep
+from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urljoin, urlsplit
 from urllib.request import urlopen
 
@@ -23,6 +33,8 @@ STAGING = ROOT / "data" / "staging"
 
 
 class ZipLinks(HTMLParser):
+    """Collect official bulk ZIP links, keyed by month as YYYYMM."""
+
     def __init__(self):
         super().__init__()
         self.by_month = {}
@@ -44,6 +56,7 @@ class ZipLinks(HTMLParser):
 
 
 def fetch_zip_links():
+    """Read the current signed ZIP links from the NHSBSA dataset page."""
     page = ZipLinks()
     with urlopen(DATASET_URL, timeout=60) as response:
         page.feed(response.read().decode("utf-8"))
@@ -51,6 +64,7 @@ def fetch_zip_links():
 
 
 def parse_month(value):
+    """Parse a command-line month in YYYY-MM format."""
     if not re.fullmatch(r"\d{4}-\d{2}", value):
         raise argparse.ArgumentTypeError("Use YYYY-MM, for example 2026-06.")
     try:
@@ -60,6 +74,7 @@ def parse_month(value):
 
 
 def download_zip(url, archive):
+    """Download to a partial file and rename it after the transfer succeeds."""
     partial = archive.with_suffix(".part")
     try:
         with urlopen(url, timeout=60) as response, partial.open("wb") as target:
@@ -69,7 +84,33 @@ def download_zip(url, archive):
         partial.unlink(missing_ok=True)
 
 
+def download_with_retry(url, archive, month):
+    """Retry connection errors, timeouts and incomplete reads up to twice."""
+    retryable_errors = (ConnectionError, TimeoutError, IncompleteRead)
+
+    for attempt in range(3):
+        try:
+            download_zip(url, archive)
+            return
+        except HTTPError:
+            # Let the caller decide whether to refresh the signed link.
+            raise
+        except (*retryable_errors, URLError) as error:
+            cause = error.reason if isinstance(error, URLError) else error
+            if not isinstance(cause, retryable_errors) or attempt == 2:
+                raise
+
+            delay = 2 ** (attempt + 1)
+            print(
+                f"{month}: transfer interrupted ({type(cause).__name__}); "
+                f"retrying in {delay}s.",
+                flush=True,
+            )
+            sleep(delay)
+
+
 def run_script(script, *args):
+    """Run a pipeline stage from the repository root."""
     subprocess.run([sys.executable, script, *args], cwd=ROOT, check=True)
 
 
@@ -112,14 +153,14 @@ def main():
 
                 print(f"{month}: downloading bulk ZIP.", flush=True)
                 try:
-                    download_zip(url, archive)
+                    download_with_retry(url, archive, month)
                 except HTTPError as error:
                     if error.code not in (400, 403):
                         raise
 
                     print(
                         f"{month}: download returned HTTP {error.code}; "
-                        "refreshing ZIP links and retrying once.",
+                        "refreshing ZIP links and retrying.",
                         flush=True,
                     )
                     links = fetch_zip_links()
@@ -129,7 +170,7 @@ def main():
                             f"No official ZIP link found for {month} after refresh."
                         ) from error
 
-                    download_zip(fresh_url, archive)
+                    download_with_retry(fresh_url, archive, month)
 
             run_script("ingest_month.py", str(archive))
 
