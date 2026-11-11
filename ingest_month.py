@@ -1,3 +1,10 @@
+"""Convert one NHSBSA monthly ZIP into filtered prescribing Parquet.
+
+Detect legacy and current BNF headers and normalise them to a shared staging
+schema with YYYY-MM month values. Keep rows for the three selected stimulants
+and replace the month’s staged file after conversion succeeds.
+"""
+
 import argparse
 import csv
 import io
@@ -24,7 +31,6 @@ LEGACY_BNF_COLUMNS = {
 GEOGRAPHY_COLUMNS = (
     "REGIONAL_OFFICE_CODE",
     "REGIONAL_OFFICE_NAME",
-    "ICB_CODE",
     "PRACTICE_CODE",
 )
 
@@ -89,7 +95,7 @@ def main():
                         ) AS YEAR_MONTH,
                         REGIONAL_OFFICE_CODE,
                         REGIONAL_OFFICE_NAME,
-                        ICB_CODE,
+                        {"ICB_CODE" if "ICB_CODE" in headers else "CAST(NULL AS VARCHAR)"} AS ICB_CODE,
                         PRACTICE_CODE,
                         {bnf_select},
                         CAST(QUANTITY AS DECIMAL(18, 6)) AS QUANTITY,

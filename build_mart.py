@@ -1,3 +1,10 @@
+"""Aggregate staged prescribing Parquets into one Tableau CSV.
+
+Group by month, region and BNF presentation, retaining chemical and presentation
+labels. Reconcile monthly items, quantity and actual cost against staging before
+replacing the CSV.
+"""
+
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
