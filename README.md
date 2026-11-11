@@ -102,10 +102,10 @@ On macOS or Linux:
 source .venv/bin/activate
 ```
 
-Install DuckDB:
+Install requirements:
 
 ```bash
-python -m pip install duckdb
+python -m pip install -r requirements.txt
 ```
 
 To reproduce the dashboard's full date range:
